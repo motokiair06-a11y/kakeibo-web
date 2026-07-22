@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<title>家計ノート</title>
+<meta name="theme-color" content="#29695A" />
+<link rel="stylesheet" href="style.css" />
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+</head>
+<body>
+
+<div id="authScreen" class="auth-screen" style="display:none;">
+  <div class="auth-card">
+    <div class="brand-mark" style="width:48px;height:48px;font-size:24px;margin:0 auto 14px;">家</div>
+    <h1>家計ノート</h1>
+    <p class="auth-sub">メールアドレスでログインしてください。パスワードは不要です。</p>
+    <div id="authFormArea">
+      <form id="authForm" class="auth-form">
+        <div class="auth-input-row">
+          <span>✉️</span>
+          <input type="email" id="authEmail" required placeholder="you@example.com" />
+        </div>
+        <p id="authError" class="auth-error" style="display:none;"></p>
+        <button type="submit" class="primary-btn" id="authSubmitBtn" style="width:100%;justify-content:center;">ログインリンクを送る</button>
+      </form>
+    </div>
+    <div id="authSent" class="auth-sent" style="display:none;">
+      <div style="font-size:28px;">✅</div>
+      <p id="authSentMsg"></p>
+    </div>
+  </div>
+</div>
+
+<div id="loadingScreen" class="loading-screen">
+  <div class="loader"></div>
+  <p>読み込み中…</p>
+</div>
+
+<div id="appRoot" class="app-root" style="display:none;">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">家</span>
+      <div><h1>家計ノート</h1><p class="brand-sub">Kakeibo Note</p></div>
+    </div>
+    <div class="month-switch">
+      <button class="icon-btn" onclick="app.changeMonth(-1)">‹</button>
+      <span class="month-label" id="monthLabel"></span>
+      <button class="icon-btn" onclick="app.changeMonth(1)">›</button>
+    </div>
+    <button class="icon-btn" onclick="app.toggleDark()" id="darkToggleBtn">🌙</button>
+  </header>
+
+  <div id="bannerArea"></div>
+
+  <main class="content" id="tabContent"></main>
+
+  <input type="file" id="csvFileInput" accept=".csv" style="display:none;" onchange="app.importCSV(this.files[0]); this.value='';" />
+
+  <nav class="tabbar" id="tabbar"></nav>
+
+  <button class="fab" id="fabBtn" style="display:none;"></button>
+
+  <div id="modalRoot"></div>
+  <div id="toastRoot"></div>
+</div>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
