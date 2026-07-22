@@ -2,7 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+:root,
+:root[data-theme="light"] {
   --ink: #1b2a4a;
   --ink-soft: #5b6b85;
   --paper: #f1efe8;
@@ -16,11 +17,26 @@
   --clay-soft: #f4e3df;
 }
 
+:root[data-theme="dark"] {
+  --ink: #ece8dd;
+  --ink-soft: #a3a08f;
+  --paper: #14181f;
+  --paper-alt: #1c222b;
+  --rule: #2c3340;
+  --brass: #d3ab72;
+  --brass-soft: #3a3020;
+  --green: #7fd0a4;
+  --green-soft: #1e3327;
+  --clay: #e88f7c;
+  --clay-soft: #3a231f;
+}
+
 body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
   font-family: "Zen Kaku Gothic New", "Noto Sans JP", sans-serif;
+  transition: background-color 0.15s ease, color 0.15s ease;
 }
 
 .mono {

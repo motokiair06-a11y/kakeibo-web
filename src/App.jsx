@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
-  Home, RefreshCw, Wallet, TrendingUp, Bell, Pause, Play, Edit2, Trash2,
-  Plus, X, ChevronRight, ChevronLeft, AlertCircle, Loader2, Check,
-  Calendar as CalendarIcon, List, History as HistoryIcon, PieChart as PieChartIcon
+  Home, RefreshCw, Wallet, TrendingUp, Bell, Pause, Play, Edit2, Trash2, Copy,
+  Plus, X, ChevronRight, ChevronLeft, AlertCircle, Loader2, Check, Settings as SettingsIcon,
+  Calendar as CalendarIcon, List, History as HistoryIcon, PieChart as PieChartIcon,
+  Target, Search, FileDown, FileUp, Moon, Sun, FileBarChart2
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -12,6 +13,7 @@ import {
 const EXPENSE_CATEGORIES = ["食費", "日用品", "買い物", "交通費", "住居", "光熱費", "通信費", "娯楽", "医療", "その他"];
 const INCOME_CATEGORIES = ["給与", "ボーナス", "副業", "お小遣い", "投資収益", "その他"];
 const SUB_CATEGORIES = ["動画配信", "音楽", "ニュース・雑誌", "クラウド・ソフト", "フィットネス", "ゲーム", "その他"];
+const ALL_CATEGORIES = [...new Set([...INCOME_CATEGORIES, ...EXPENSE_CATEGORIES])];
 
 const UNIT_LABEL = { day: "日", week: "週間", month: "ヶ月", year: "年" };
 const WEEKDAY_LABELS = ["日", "月", "火", "水", "木", "金", "土"];
@@ -47,6 +49,11 @@ const addDays = (dateStr, n) => {
   d.setDate(d.getDate() + n);
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 };
+const shiftMonthKey = (key, delta) => {
+  const [y, m] = key.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
+};
 
 function addInterval(dateStr, value, unit) {
   const d = new Date(dateStr + "T00:00:00");
@@ -62,7 +69,6 @@ function intervalLabel(sub) {
   return `${sub.intervalValue}${UNIT_LABEL[sub.intervalUnit]}ごと`;
 }
 
-// approximate monthly-equivalent cost, used only as a rough estimate on the home tab
 function monthlyEquivalent(sub) {
   const v = Number(sub.intervalValue) || 1;
   let months;
@@ -73,15 +79,10 @@ function monthlyEquivalent(sub) {
   return months > 0 ? Number(sub.amount) / months : 0;
 }
 
-// the next date a subscription is due, based on what has already been recorded as paid
 function getNextPaymentDate(sub) {
   return sub.lastRecordedDate ? addInterval(sub.lastRecordedDate, sub.intervalValue, sub.intervalUnit) : sub.firstPaymentDate;
 }
 
-// walk each active subscription forward from its last recorded payment (or first payment
-// date) and record a payment-history entry for every occurrence that has come due.
-// paused subscriptions are frozen: nothing is recorded and their next date does not move,
-// so re-using a free trial repeatedly never creates duplicate subscriptions or history.
 function accrueAll(subs, today) {
   const historyAdded = [];
   const newSubs = subs.map((s) => {
@@ -90,7 +91,7 @@ function accrueAll(subs, today) {
     let last = s.lastRecordedDate;
     let guard = 0;
     while (cursor <= today && guard < 1000) {
-      historyAdded.push({ id: uid(), subscriptionId: s.id, name: s.name, category: s.category, amount: Number(s.amount), date: cursor });
+      historyAdded.push({ id: uid(), subscriptionId: s.id, name: s.name, category: s.category, paymentMethod: s.paymentMethod || "", amount: Number(s.amount), date: cursor });
       last = cursor;
       cursor = addInterval(cursor, s.intervalValue, s.intervalUnit);
       guard++;
@@ -98,6 +99,13 @@ function accrueAll(subs, today) {
     return last !== s.lastRecordedDate ? { ...s, lastRecordedDate: last } : s;
   });
   return { newSubs, historyAdded };
+}
+
+function avatarColor(name) {
+  let hash = 0;
+  const str = name || "?";
+  for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+  return PALETTE[Math.abs(hash) % PALETTE.length];
 }
 
 /* ------------------------------------------------------------------ */
@@ -131,30 +139,37 @@ async function saveKey(key, value) {
 export default function App() {
   const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState("home");
-  const [subTab, setSubTab] = useState("list"); // list | history | analysis
+  const [subTab, setSubTab] = useState("list");
+  const [txnTab, setTxnTab] = useState("list");
   const [subs, setSubs] = useState([]);
   const [history, setHistory] = useState([]);
   const [txns, setTxns] = useState([]);
+  const [budgets, setBudgets] = useState({});
+  const [assetHistory, setAssetHistory] = useState([]);
+  const [darkMode, setDarkMode] = useState(false);
   const [assets, setAssets] = useState(() => {
     const o = {};
     ASSET_TYPES.forEach((t) => (o[t.key] = { valuation: 0, gainLoss: 0 }));
     return o;
   });
-  const [subModal, setSubModal] = useState(null); // {mode:'new'|'edit'|'resume', data}
-  const [txnModal, setTxnModal] = useState(null); // {type, date}
+  const [subModal, setSubModal] = useState(null);
+  const [txnModal, setTxnModal] = useState(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [saveError, setSaveError] = useState("");
 
   const today = todayStr();
 
   useEffect(() => {
     (async () => {
-      const [rawSubs, t, a, h] = await Promise.all([
+      const [rawSubs, t, a, h, b, ah, dm] = await Promise.all([
         loadKey("subscriptions", []),
         loadKey("transactions", []),
         loadKey("assets", null),
         loadKey("paymentHistory", []),
+        loadKey("budgets", {}),
+        loadKey("assetHistory", []),
+        loadKey("darkMode", false),
       ]);
-      // migrate older records that used "paymentDate" as the anchor field name
       const migrated = rawSubs.map((s) => ({
         ...s,
         firstPaymentDate: s.firstPaymentDate || s.paymentDate || todayStr(),
@@ -165,11 +180,24 @@ export default function App() {
       setHistory(newHistory);
       setTxns(t);
       if (a) setAssets(a);
+      setBudgets(b || {});
+      setAssetHistory(ah || []);
+      setDarkMode(!!dm);
       setLoading(false);
       saveKey("subscriptions", newSubs);
       if (historyAdded.length) saveKey("paymentHistory", newHistory);
     })();
   }, []);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
+
+  const toggleDarkMode = () => {
+    const next = !darkMode;
+    setDarkMode(next);
+    saveKey("darkMode", next);
+  };
 
   const enrichedSubs = useMemo(() => {
     return subs
@@ -197,12 +225,19 @@ export default function App() {
   const monthTxns = useMemo(() => txns.filter((t) => t.date.slice(0, 7) === thisMonthKey), [txns, thisMonthKey]);
   const monthIncome = useMemo(() => monthTxns.filter((t) => t.type === "income").reduce((s, t) => s + Number(t.amount), 0), [monthTxns]);
   const monthExpense = useMemo(() => monthTxns.filter((t) => t.type === "expense").reduce((s, t) => s + Number(t.amount), 0), [monthTxns]);
+  const monthExpenseByCategory = useMemo(() => {
+    const m = {};
+    monthTxns.filter((t) => t.type === "expense").forEach((t) => { m[t.category] = (m[t.category] || 0) + Number(t.amount); });
+    return m;
+  }, [monthTxns]);
   const monthSubHistory = useMemo(() => history.filter((h) => h.date.slice(0, 7) === thisMonthKey), [history, thisMonthKey]);
   const monthSubActual = useMemo(() => monthSubHistory.reduce((s, h) => s + Number(h.amount), 0), [monthSubHistory]);
   const freeMoney = monthIncome - monthExpense - monthSubActual;
 
   const assetValuationTotal = useMemo(() => ASSET_TYPES.reduce((s, t) => s + (Number(assets[t.key]?.valuation) || 0), 0), [assets]);
   const assetGainLossTotal = useMemo(() => ASSET_TYPES.reduce((s, t) => s + (Number(assets[t.key]?.gainLoss) || 0), 0), [assets]);
+
+  const paymentMethodSuggestions = useMemo(() => [...new Set(subs.map((s) => s.paymentMethod).filter(Boolean))], [subs]);
 
   const applyAccrual = useCallback((rawSubs, baseHistory) => {
     const { newSubs, historyAdded } = accrueAll(rawSubs, todayStr());
@@ -233,11 +268,27 @@ export default function App() {
     const ok = await saveKey("transactions", next);
     if (!ok) setSaveError("収支の保存に失敗しました。もう一度お試しください。");
   }, []);
-  const persistAssets = useCallback(async (next) => {
-    setAssets(next);
-    const ok = await saveKey("assets", next);
-    if (!ok) setSaveError("資産情報の保存に失敗しました。もう一度お試しください。");
+
+  const persistBudgets = useCallback(async (next) => {
+    setBudgets(next);
+    const ok = await saveKey("budgets", next);
+    if (!ok) setSaveError("予算の保存に失敗しました。もう一度お試しください。");
   }, []);
+
+  const persistAssets = useCallback(
+    async (cleanedAssets) => {
+      setAssets(cleanedAssets);
+      const totalV = ASSET_TYPES.reduce((s, t) => s + (Number(cleanedAssets[t.key]?.valuation) || 0), 0);
+      const totalG = ASSET_TYPES.reduce((s, t) => s + (Number(cleanedAssets[t.key]?.gainLoss) || 0), 0);
+      const filtered = assetHistory.filter((h) => h.date !== todayStr());
+      const newAssetHistory = [...filtered, { date: todayStr(), totalValuation: totalV, totalGainLoss: totalG }].sort((a, b) => (a.date < b.date ? -1 : 1));
+      setAssetHistory(newAssetHistory);
+      const ok1 = await saveKey("assets", cleanedAssets);
+      const ok2 = await saveKey("assetHistory", newAssetHistory);
+      if (!ok1 || !ok2) setSaveError("資産情報の保存に失敗しました。もう一度お試しください。");
+    },
+    [assetHistory]
+  );
 
   const saveSub = (data) => {
     if (data.id) {
@@ -252,31 +303,90 @@ export default function App() {
     if (sub.status === "active") {
       commitSubs(subs.map((s) => (s.id === sub.id ? { ...s, status: "paused", pausedAt: today } : s)));
     } else {
-      // resume: open edit modal so the user can confirm/adjust the next payment date.
-      // the subscription keeps the same id, so it is still recognized as the same one.
       setSubModal({ mode: "resume", data: { ...sub, status: "active", firstPaymentDate: today } });
     }
+  };
+  const duplicateSub = (sub) => {
+    setSubModal({
+      mode: "new",
+      data: {
+        name: `${sub.name}のコピー`, amount: sub.amount, category: sub.category, paymentMethod: sub.paymentMethod || "",
+        firstPaymentDate: today, intervalValue: sub.intervalValue, intervalUnit: sub.intervalUnit,
+        reminderDays: sub.reminderDays, memo: sub.memo || "",
+      },
+    });
   };
   const deleteHistoryEntry = (id) => {
     if (confirm("この支払い履歴を削除しますか？")) persistHistory(history.filter((h) => h.id !== id));
   };
 
   const saveTxn = (data) => {
-    persistTxns([{ ...data, id: uid() }, ...txns]);
+    if (data.id) {
+      persistTxns(txns.map((t) => (t.id === data.id ? { ...t, ...data } : t)));
+    } else {
+      persistTxns([{ ...data, id: uid() }, ...txns]);
+    }
     setTxnModal(null);
   };
   const deleteTxn = (id) => persistTxns(txns.filter((t) => t.id !== id));
 
+  const exportData = () => {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      subscriptions: subs, transactions: txns, assets, paymentHistory: history,
+      budgets, assetHistory, darkMode,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `household-ledger-backup-${today}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const importData = (file) => {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const data = JSON.parse(reader.result);
+        if (!confirm("現在のデータを上書きしてインポートします。よろしいですか？")) return;
+        const newSubs = data.subscriptions || [];
+        const newHistory = data.paymentHistory || [];
+        const newTxns = data.transactions || [];
+        const newAssets = data.assets || assets;
+        const newBudgets = data.budgets || {};
+        const newAssetHistory = data.assetHistory || [];
+        setSubs(newSubs); setHistory(newHistory); setTxns(newTxns);
+        setAssets(newAssets); setBudgets(newBudgets); setAssetHistory(newAssetHistory);
+        await Promise.all([
+          saveKey("subscriptions", newSubs), saveKey("paymentHistory", newHistory), saveKey("transactions", newTxns),
+          saveKey("assets", newAssets), saveKey("budgets", newBudgets), saveKey("assetHistory", newAssetHistory),
+        ]);
+        alert("インポートが完了しました。");
+      } catch {
+        alert("ファイルの読み込みに失敗しました。正しいバックアップファイルか確認してください。");
+      }
+    };
+    reader.readAsText(file);
+  };
+
   return (
     <div className="min-h-screen w-full">
-      {/* Header */}
       <header className="sticky top-0 z-30 border-b" style={{ borderColor: "var(--rule)", background: "var(--paper)" }}>
-        <div className="max-w-5xl mx-auto px-4 pt-5 pb-3">
-          <div className="flex items-baseline justify-between">
-            <h1 className="serif text-2xl md:text-3xl font-bold tracking-wide" style={{ color: "var(--ink)" }}>家計ノート</h1>
-            <span className="mono text-xs" style={{ color: "var(--ink-soft)" }}>{fmtDate(today)}</span>
+        <div className="max-w-5xl mx-auto px-4 pt-5 pb-3 flex items-start justify-between">
+          <div>
+            <div className="flex items-baseline gap-3">
+              <h1 className="serif text-2xl md:text-3xl font-bold tracking-wide" style={{ color: "var(--ink)" }}>家計ノート</h1>
+              <span className="mono text-xs" style={{ color: "var(--ink-soft)" }}>{fmtDate(today)}</span>
+            </div>
+            <p className="text-xs mt-1" style={{ color: "var(--ink-soft)" }}>収支・サブスク・資産をひとつの通帳で管理</p>
           </div>
-          <p className="text-xs mt-1" style={{ color: "var(--ink-soft)" }}>収支・サブスク・資産をひとつの通帳で管理</p>
+          <button onClick={() => setSettingsOpen(true)} className="p-2 rounded-lg" style={{ color: "var(--ink-soft)", background: "var(--paper-alt)", border: "1px solid var(--rule)" }}>
+            <SettingsIcon size={17} />
+          </button>
         </div>
         <nav className="max-w-5xl mx-auto px-4 flex gap-1 overflow-x-auto">
           {[
@@ -285,6 +395,7 @@ export default function App() {
             { id: "calendar", label: "カレンダー", icon: CalendarIcon },
             { id: "txns", label: "収支", icon: Wallet },
             { id: "assets", label: "資産", icon: TrendingUp },
+            { id: "report", label: "レポート", icon: FileBarChart2 },
           ].map((t) => {
             const Icon = t.icon;
             const active = tab === t.id;
@@ -293,17 +404,12 @@ export default function App() {
                 key={t.id}
                 onClick={() => setTab(t.id)}
                 className="relative flex items-center gap-1.5 px-3.5 py-2.5 text-sm font-medium whitespace-nowrap"
-                style={{
-                  color: active ? "var(--ink)" : "var(--ink-soft)",
-                  borderBottom: active ? "2px solid var(--brass)" : "2px solid transparent",
-                }}
+                style={{ color: active ? "var(--ink)" : "var(--ink-soft)", borderBottom: active ? "2px solid var(--brass)" : "2px solid transparent" }}
               >
                 <Icon size={15} />
                 {t.label}
                 {!!t.badge && (
-                  <span className="mono ml-0.5 text-[10px] px-1.5 py-0.5 rounded-full text-white" style={{ background: "var(--clay)" }}>
-                    {t.badge}
-                  </span>
+                  <span className="mono ml-0.5 text-[10px] px-1.5 py-0.5 rounded-full text-white" style={{ background: "var(--clay)" }}>{t.badge}</span>
                 )}
               </button>
             );
@@ -326,31 +432,18 @@ export default function App() {
             )}
             {tab === "home" && (
               <HomeTab
-                freeMoney={freeMoney}
-                monthIncome={monthIncome}
-                monthExpense={monthExpense}
-                monthSubActual={monthSubActual}
-                activeMonthlyEstimate={activeMonthlyEstimate}
-                assetValuationTotal={assetValuationTotal}
-                assetGainLossTotal={assetGainLossTotal}
-                remindingSubs={remindingSubs}
-                today={today}
-                goSubs={() => setTab("subs")}
+                freeMoney={freeMoney} monthIncome={monthIncome} monthExpense={monthExpense} monthSubActual={monthSubActual}
+                activeMonthlyEstimate={activeMonthlyEstimate} assetValuationTotal={assetValuationTotal} assetGainLossTotal={assetGainLossTotal}
+                remindingSubs={remindingSubs} today={today} goSubs={() => setTab("subs")}
+                onQuickAdd={(type) => setTxnModal({ type, date: today })}
               />
             )}
             {tab === "subs" && (
               <SubsTab
-                subTab={subTab}
-                setSubTab={setSubTab}
-                subs={enrichedSubs}
-                history={history}
-                today={today}
-                activeMonthlyEstimate={activeMonthlyEstimate}
-                onAdd={() => setSubModal({ mode: "new", data: null })}
-                onEdit={(s) => setSubModal({ mode: "edit", data: s })}
-                onDelete={deleteSub}
-                onTogglePause={togglePause}
-                onDeleteHistory={deleteHistoryEntry}
+                subTab={subTab} setSubTab={setSubTab} subs={enrichedSubs} history={history} today={today}
+                activeMonthlyEstimate={activeMonthlyEstimate} paymentMethodSuggestions={paymentMethodSuggestions}
+                onAdd={() => setSubModal({ mode: "new", data: null })} onEdit={(s) => setSubModal({ mode: "edit", data: s })}
+                onDelete={deleteSub} onTogglePause={togglePause} onDuplicate={duplicateSub} onDeleteHistory={deleteHistoryEntry}
               />
             )}
             {tab === "calendar" && (
@@ -358,31 +451,40 @@ export default function App() {
             )}
             {tab === "txns" && (
               <TxnsTab
-                txns={txns}
-                monthIncome={monthIncome}
-                monthExpense={monthExpense}
-                freeMoney={freeMoney}
-                onAdd={(type) => setTxnModal({ type, date: today })}
+                txnTab={txnTab} setTxnTab={setTxnTab} txns={txns} monthIncome={monthIncome} monthExpense={monthExpense} freeMoney={freeMoney}
+                budgets={budgets} monthExpenseByCategory={monthExpenseByCategory} onSaveBudgets={persistBudgets}
+                onAdd={(type) => setTxnModal({ type, date: today })} onEdit={(t) => setTxnModal({ type: t.type, date: t.date, initial: t })}
                 onDelete={deleteTxn}
               />
             )}
             {tab === "assets" && (
-              <AssetsTab assets={assets} onSave={persistAssets} totalValuation={assetValuationTotal} totalGainLoss={assetGainLossTotal} />
+              <AssetsTab assets={assets} assetHistory={assetHistory} onSave={persistAssets} totalValuation={assetValuationTotal} totalGainLoss={assetGainLossTotal} />
+            )}
+            {tab === "report" && (
+              <ReportTab today={today} txns={txns} history={history} subs={enrichedSubs} assetHistory={assetHistory} assetValuationTotal={assetValuationTotal} />
             )}
           </>
         )}
       </main>
 
-      {subModal && <SubModal mode={subModal.mode} initial={subModal.data} onCancel={() => setSubModal(null)} onSave={saveSub} />}
+      {subModal && (
+        <SubModal mode={subModal.mode} initial={subModal.data} paymentMethodSuggestions={paymentMethodSuggestions} onCancel={() => setSubModal(null)} onSave={saveSub} />
+      )}
       {txnModal && (
-        <TxnModal type={txnModal.type} defaultDate={txnModal.date || today} onCancel={() => setTxnModal(null)} onSave={saveTxn} />
+        <TxnModal type={txnModal.type} defaultDate={txnModal.date || today} initial={txnModal.initial} onCancel={() => setTxnModal(null)} onSave={saveTxn} />
+      )}
+      {settingsOpen && (
+        <SettingsModal
+          darkMode={darkMode} onToggleDark={toggleDarkMode} onClose={() => setSettingsOpen(false)}
+          onExport={exportData} onImportFile={importData}
+        />
       )}
     </div>
   );
 }
 
 /* ------------------------------------------------------------------ */
-/* Home                                                                 */
+/* Shared bits                                                          */
 /* ------------------------------------------------------------------ */
 
 function StatCard({ label, value, sub, accent }) {
@@ -395,7 +497,136 @@ function StatCard({ label, value, sub, accent }) {
   );
 }
 
-function HomeTab({ freeMoney, monthIncome, monthExpense, monthSubActual, activeMonthlyEstimate, assetValuationTotal, assetGainLossTotal, remindingSubs, today, goSubs }) {
+function EmptyState({ text }) {
+  return (
+    <div className="text-sm rounded-lg p-8 text-center" style={{ background: "var(--paper-alt)", border: "1px dashed var(--rule)", color: "var(--ink-soft)" }}>
+      {text}
+    </div>
+  );
+}
+
+function IconButton({ icon: Icon, label, onClick, tone }) {
+  return (
+    <button onClick={onClick} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded" style={{ color: tone === "clay" ? "var(--clay)" : "var(--ink-soft)", background: "var(--paper)" }}>
+      <Icon size={13} /> {label}
+    </button>
+  );
+}
+
+function Avatar({ name, size = 32 }) {
+  const color = avatarColor(name);
+  const letter = (name || "?").trim().charAt(0).toUpperCase() || "?";
+  return (
+    <div
+      className="mono flex items-center justify-center rounded-full shrink-0 font-bold text-white"
+      style={{ width: size, height: size, background: color, fontSize: size * 0.42 }}
+    >
+      {letter}
+    </div>
+  );
+}
+
+function Switch({ checked, onChange }) {
+  return (
+    <button
+      onClick={() => onChange(!checked)}
+      className="w-10 h-6 rounded-full relative shrink-0"
+      style={{ background: checked ? "var(--ink)" : "var(--rule)" }}
+    >
+      <span
+        className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white transition-transform"
+        style={{ transform: checked ? "translateX(16px)" : "translateX(0)" }}
+      />
+    </button>
+  );
+}
+
+function Modal({ title, children, onCancel }) {
+  return (
+    <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center p-0 sm:p-4" style={{ background: "rgba(10,14,22,0.55)" }} onClick={onCancel}>
+      <div className="w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-5 max-h-[90vh] overflow-y-auto" style={{ background: "var(--paper-alt)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="serif text-lg font-bold" style={{ color: "var(--ink)" }}>{title}</h3>
+          <button onClick={onCancel} style={{ color: "var(--ink-soft)" }}><X size={18} /></button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <div className="mb-3">
+      <label className="block text-xs font-bold mb-1" style={{ color: "var(--ink-soft)" }}>{label}</label>
+      {children}
+    </div>
+  );
+}
+
+function ModalActions({ onCancel, onSave, disabled, saveLabel = "保存" }) {
+  return (
+    <div className="flex gap-2 mt-4">
+      <button onClick={onCancel} className="flex-1 text-sm font-bold px-4 py-2.5 rounded-lg" style={{ background: "var(--paper)", color: "var(--ink-soft)", border: "1px solid var(--rule)" }}>
+        キャンセル
+      </button>
+      <button onClick={onSave} disabled={disabled} className="flex-1 text-sm font-bold px-4 py-2.5 rounded-lg text-white" style={{ background: disabled ? "var(--rule)" : "var(--ink)" }}>
+        {saveLabel}
+      </button>
+    </div>
+  );
+}
+
+function SegButton({ active, onClick, icon: Icon, label, badge }) {
+  return (
+    <button
+      onClick={onClick}
+      className="flex-1 flex items-center justify-center gap-1.5 text-xs font-bold py-2 rounded-md"
+      style={{ background: active ? "var(--ink)" : "transparent", color: active ? "white" : "var(--ink-soft)" }}
+    >
+      <Icon size={13} /> {label}
+      {!!badge && <span className="mono text-[9px] px-1 rounded-full text-white" style={{ background: "var(--clay)" }}>{badge}</span>}
+    </button>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Settings modal (dark mode + backup/restore)                          */
+/* ------------------------------------------------------------------ */
+
+function SettingsModal({ darkMode, onToggleDark, onClose, onExport, onImportFile }) {
+  const fileRef = useRef(null);
+  return (
+    <Modal title="設定" onCancel={onClose}>
+      <div className="flex items-center justify-between mb-4 rounded-lg p-3" style={{ background: "var(--paper)", border: "1px solid var(--rule)" }}>
+        <div className="flex items-center gap-2 text-sm font-bold" style={{ color: "var(--ink)" }}>
+          {darkMode ? <Moon size={15} /> : <Sun size={15} />} ダークモード
+        </div>
+        <Switch checked={darkMode} onChange={onToggleDark} />
+      </div>
+
+      <div className="space-y-2 mb-2">
+        <button onClick={onExport} className="w-full flex items-center gap-2 text-sm font-bold px-4 py-3 rounded-lg" style={{ background: "var(--paper)", border: "1px solid var(--rule)", color: "var(--ink)" }}>
+          <FileDown size={16} /> データをエクスポート（JSON）
+        </button>
+        <button onClick={() => fileRef.current?.click()} className="w-full flex items-center gap-2 text-sm font-bold px-4 py-3 rounded-lg" style={{ background: "var(--paper)", border: "1px solid var(--rule)", color: "var(--ink)" }}>
+          <FileUp size={16} /> データをインポート（JSON）
+        </button>
+        <input ref={fileRef} type="file" accept="application/json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onImportFile(f); e.target.value = ""; }} />
+      </div>
+
+      <p className="text-[11px] mt-3 leading-relaxed" style={{ color: "var(--ink-soft)" }}>
+        データはこの端末のブラウザにのみ保存されています。機種変更やブラウザの変更・キャッシュ削除の前に、必ずエクスポートしてバックアップを取ってください。
+      </p>
+    </Modal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Home                                                                 */
+/* ------------------------------------------------------------------ */
+
+function HomeTab({ freeMoney, monthIncome, monthExpense, monthSubActual, activeMonthlyEstimate, assetValuationTotal, assetGainLossTotal, remindingSubs, today, goSubs, onQuickAdd }) {
   return (
     <div className="space-y-6">
       <section>
@@ -406,6 +637,10 @@ function HomeTab({ freeMoney, monthIncome, monthExpense, monthSubActual, activeM
             <span>収入 {fmtYen(monthIncome)}</span>
             <span>支出 {fmtYen(monthExpense)}</span>
             <span>サブスク {fmtYen(monthSubActual)}</span>
+          </div>
+          <div className="flex gap-2 mt-4">
+            <button onClick={() => onQuickAdd("income")} className="flex-1 text-xs font-bold py-2 rounded-lg" style={{ background: "rgba(255,255,255,0.14)" }}>+収入</button>
+            <button onClick={() => onQuickAdd("expense")} className="flex-1 text-xs font-bold py-2 rounded-lg" style={{ background: "rgba(255,255,255,0.14)" }}>+支出</button>
           </div>
         </div>
       </section>
@@ -423,28 +658,23 @@ function HomeTab({ freeMoney, monthIncome, monthExpense, monthSubActual, activeM
 
       <section>
         <div className="flex items-center justify-between mb-2">
-          <h2 className="text-sm font-bold flex items-center gap-1.5" style={{ color: "var(--ink)" }}>
-            <Bell size={15} /> 支払いリマインド
-          </h2>
-          <button onClick={goSubs} className="text-xs flex items-center gap-0.5" style={{ color: "var(--brass)" }}>
-            サブスク一覧 <ChevronRight size={13} />
-          </button>
+          <h2 className="text-sm font-bold flex items-center gap-1.5" style={{ color: "var(--ink)" }}><Bell size={15} /> 支払いリマインド</h2>
+          <button onClick={goSubs} className="text-xs flex items-center gap-0.5" style={{ color: "var(--brass)" }}>サブスク一覧 <ChevronRight size={13} /></button>
         </div>
         {remindingSubs.length === 0 ? (
-          <div className="text-sm rounded-lg p-4" style={{ background: "var(--paper-alt)", border: "1px dashed var(--rule)", color: "var(--ink-soft)" }}>
-            今のところ近づいている支払いはありません。
-          </div>
+          <div className="text-sm rounded-lg p-4" style={{ background: "var(--paper-alt)", border: "1px dashed var(--rule)", color: "var(--ink-soft)" }}>今のところ近づいている支払いはありません。</div>
         ) : (
           <div className="space-y-2">
             {remindingSubs.map((s) => {
               const d = daysBetween(today, s.nextPaymentDate);
               return (
-                <div key={s.id} className="flex items-center justify-between rounded-lg px-4 py-3" style={{ background: "var(--clay-soft)", border: "1px solid var(--clay)" }}>
-                  <div>
-                    <div className="text-sm font-bold" style={{ color: "var(--ink)" }}>{s.name}</div>
+                <div key={s.id} className="flex items-center gap-3 rounded-lg px-4 py-3" style={{ background: "var(--clay-soft)", border: "1px solid var(--clay)" }}>
+                  <Avatar name={s.name} size={30} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-bold truncate" style={{ color: "var(--ink)" }}>{s.name}</div>
                     <div className="text-xs" style={{ color: "var(--ink-soft)" }}>{fmtDate(s.nextPaymentDate)} 支払い予定</div>
                   </div>
-                  <div className="text-right">
+                  <div className="text-right shrink-0">
                     <div className="mono font-bold" style={{ color: "var(--clay)" }}>{d === 0 ? "本日" : `あと${d}日`}</div>
                     <div className="mono text-xs" style={{ color: "var(--ink-soft)" }}>{fmtYen(s.amount)}</div>
                   </div>
@@ -462,22 +692,7 @@ function HomeTab({ freeMoney, monthIncome, monthExpense, monthSubActual, activeM
 /* Subscriptions (list / history / analysis)                            */
 /* ------------------------------------------------------------------ */
 
-function SegButton({ active, onClick, icon: Icon, label, badge }) {
-  return (
-    <button
-      onClick={onClick}
-      className="flex-1 flex items-center justify-center gap-1.5 text-xs font-bold py-2 rounded-md"
-      style={{ background: active ? "var(--ink)" : "transparent", color: active ? "white" : "var(--ink-soft)" }}
-    >
-      <Icon size={13} /> {label}
-      {!!badge && (
-        <span className="mono text-[9px] px-1 rounded-full text-white" style={{ background: "var(--clay)" }}>{badge}</span>
-      )}
-    </button>
-  );
-}
-
-function SubsTab({ subTab, setSubTab, subs, history, today, activeMonthlyEstimate, onAdd, onEdit, onDelete, onTogglePause, onDeleteHistory }) {
+function SubsTab({ subTab, setSubTab, subs, history, today, activeMonthlyEstimate, paymentMethodSuggestions, onAdd, onEdit, onDelete, onTogglePause, onDuplicate, onDeleteHistory }) {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
@@ -498,16 +713,14 @@ function SubsTab({ subTab, setSubTab, subs, history, today, activeMonthlyEstimat
         <SegButton active={subTab === "analysis"} onClick={() => setSubTab("analysis")} icon={PieChartIcon} label="分析" />
       </div>
 
-      {subTab === "list" && (
-        <SubsList subs={subs} today={today} onEdit={onEdit} onDelete={onDelete} onTogglePause={onTogglePause} />
-      )}
+      {subTab === "list" && <SubsList subs={subs} today={today} onEdit={onEdit} onDelete={onDelete} onTogglePause={onTogglePause} onDuplicate={onDuplicate} />}
       {subTab === "history" && <SubsHistory history={history} onDelete={onDeleteHistory} />}
       {subTab === "analysis" && <SubsAnalysis history={history} today={today} />}
     </div>
   );
 }
 
-function SubsList({ subs, today, onEdit, onDelete, onTogglePause }) {
+function SubsList({ subs, today, onEdit, onDelete, onTogglePause, onDuplicate }) {
   if (subs.length === 0) return <EmptyState text="登録されているサブスクはありません。「追加」から登録してください。" />;
   return (
     <div className="space-y-2.5">
@@ -516,33 +729,24 @@ function SubsList({ subs, today, onEdit, onDelete, onTogglePause }) {
         const d = daysBetween(today, s.nextPaymentDate);
         const reminding = !paused && d >= 0 && d <= (Number(s.reminderDays) || 0);
         return (
-          <div
-            key={s.id}
-            className="rounded-lg p-4"
-            style={{
-              background: paused ? "var(--paper)" : "var(--paper-alt)",
-              border: `1px solid ${reminding ? "var(--clay)" : "var(--rule)"}`,
-              opacity: paused ? 0.65 : 1,
-            }}
-          >
+          <div key={s.id} className="rounded-lg p-4" style={{ background: paused ? "var(--paper)" : "var(--paper-alt)", border: `1px solid ${reminding ? "var(--clay)" : "var(--rule)"}`, opacity: paused ? 0.65 : 1 }}>
             <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-bold text-sm" style={{ color: "var(--ink)" }}>{s.name}</span>
-                  {s.category && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--brass-soft)", color: "var(--brass)" }}>{s.category}</span>
-                  )}
-                  <span
-                    className="text-[10px] px-1.5 py-0.5 rounded font-bold"
-                    style={{ background: paused ? "var(--rule)" : "var(--green-soft)", color: paused ? "var(--ink-soft)" : "var(--green)" }}
-                  >
-                    {paused ? "停止中" : "稼働中"}
-                  </span>
+              <div className="flex items-start gap-2.5 min-w-0">
+                <Avatar name={s.name} />
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-bold text-sm" style={{ color: "var(--ink)" }}>{s.name}</span>
+                    {s.category && <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--brass-soft)", color: "var(--brass)" }}>{s.category}</span>}
+                    <span className="text-[10px] px-1.5 py-0.5 rounded font-bold" style={{ background: paused ? "var(--rule)" : "var(--green-soft)", color: paused ? "var(--ink-soft)" : "var(--green)" }}>
+                      {paused ? "停止中" : "稼働中"}
+                    </span>
+                  </div>
+                  <div className="text-xs mt-1" style={{ color: "var(--ink-soft)" }}>
+                    {intervalLabel(s)} ・ 初回 {fmtDate(s.firstPaymentDate)} ・ リマインド{s.reminderDays}日前
+                    {s.paymentMethod && ` ・ ${s.paymentMethod}`}
+                  </div>
+                  {s.memo && <div className="text-xs mt-1 truncate" style={{ color: "var(--ink-soft)" }}>{s.memo}</div>}
                 </div>
-                <div className="text-xs mt-1" style={{ color: "var(--ink-soft)" }}>
-                  {intervalLabel(s)} ・ 初回 {fmtDate(s.firstPaymentDate)} ・ リマインド{s.reminderDays}日前
-                </div>
-                {s.memo && <div className="text-xs mt-1 truncate" style={{ color: "var(--ink-soft)" }}>{s.memo}</div>}
               </div>
               <div className="text-right shrink-0">
                 <div className="mono font-bold text-lg" style={{ color: "var(--ink)" }}>{fmtYen(s.amount)}</div>
@@ -551,9 +755,10 @@ function SubsList({ subs, today, onEdit, onDelete, onTogglePause }) {
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-1.5 mt-3 pt-3" style={{ borderTop: "1px solid var(--rule)" }}>
+            <div className="flex items-center gap-1.5 mt-3 pt-3 flex-wrap" style={{ borderTop: "1px solid var(--rule)" }}>
               <IconButton icon={paused ? Play : Pause} label={paused ? "再開" : "停止"} onClick={() => onTogglePause(s)} />
               <IconButton icon={Edit2} label="編集" onClick={() => onEdit(s)} />
+              <IconButton icon={Copy} label="複製" onClick={() => onDuplicate(s)} />
               <IconButton icon={Trash2} label="削除" tone="clay" onClick={() => { if (confirm(`「${s.name}」を削除しますか？`)) onDelete(s.id); }} />
             </div>
           </div>
@@ -567,17 +772,11 @@ function SubsHistory({ history, onDelete }) {
   const groups = useMemo(() => {
     const sorted = [...history].sort((a, b) => (a.date < b.date ? 1 : -1));
     const map = {};
-    sorted.forEach((h) => {
-      const key = h.date.slice(0, 7);
-      if (!map[key]) map[key] = [];
-      map[key].push(h);
-    });
+    sorted.forEach((h) => { const key = h.date.slice(0, 7); (map[key] ||= []).push(h); });
     return Object.entries(map).sort((a, b) => (a[0] < b[0] ? 1 : -1));
   }, [history]);
 
-  if (history.length === 0) {
-    return <EmptyState text="支払い履歴はまだありません。稼働中のサブスクの支払日が来ると、自動でここに記録されます。" />;
-  }
+  if (history.length === 0) return <EmptyState text="支払い履歴はまだありません。稼働中のサブスクの支払日が来ると、自動でここに記録されます。" />;
 
   return (
     <div className="space-y-4">
@@ -593,9 +792,12 @@ function SubsHistory({ history, onDelete }) {
             <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--rule)", background: "var(--paper-alt)" }}>
               {items.map((h, i) => (
                 <div key={h.id} className="flex items-center justify-between px-4 py-3" style={{ borderTop: i === 0 ? "none" : "1px solid var(--rule)" }}>
-                  <div className="min-w-0">
-                    <div className="text-sm font-bold truncate" style={{ color: "var(--ink)" }}>{h.name}</div>
-                    <div className="text-xs mono" style={{ color: "var(--ink-soft)" }}>{fmtDate(h.date)}{h.category ? ` ・ ${h.category}` : ""}</div>
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Avatar name={h.name} size={26} />
+                    <div className="min-w-0">
+                      <div className="text-sm font-bold truncate" style={{ color: "var(--ink)" }}>{h.name}</div>
+                      <div className="text-xs mono" style={{ color: "var(--ink-soft)" }}>{fmtDate(h.date)}{h.category ? ` ・ ${h.category}` : ""}{h.paymentMethod ? ` ・ ${h.paymentMethod}` : ""}</div>
+                    </div>
                   </div>
                   <div className="flex items-center gap-3 shrink-0">
                     <span className="mono font-bold" style={{ color: "var(--ink)" }}>{fmtYen(h.amount)}</span>
@@ -612,8 +814,9 @@ function SubsHistory({ history, onDelete }) {
 }
 
 function SubsAnalysis({ history, today }) {
-  const [mode, setMode] = useState("month"); // month | range
+  const [mode, setMode] = useState("month");
   const [range, setRange] = useState({ start: addDays(today, -365), end: today });
+  const [groupBy, setGroupBy] = useState("service");
 
   const thisMonthKey = today.slice(0, 7);
   const entries = useMemo(() => {
@@ -624,41 +827,35 @@ function SubsAnalysis({ history, today }) {
   const { segments, total } = useMemo(() => {
     const map = {};
     entries.forEach((h) => {
-      const key = h.subscriptionId || h.name;
-      if (!map[key]) map[key] = { name: h.name, value: 0 };
+      const key = groupBy === "service" ? (h.subscriptionId || h.name) : (h.paymentMethod || "未設定");
+      const label = groupBy === "service" ? h.name : (h.paymentMethod || "未設定");
+      if (!map[key]) map[key] = { name: label, value: 0 };
       map[key].value += Number(h.amount);
     });
     const arr = Object.values(map).sort((a, b) => b.value - a.value);
     const t = arr.reduce((s, x) => s + x.value, 0);
     return { segments: arr.map((x, i) => ({ ...x, color: PALETTE[i % PALETTE.length] })), total: t };
-  }, [entries]);
+  }, [entries, groupBy]);
 
   return (
     <div>
-      <div className="flex gap-1 p-1 rounded-lg mb-4" style={{ background: "var(--paper-alt)", border: "1px solid var(--rule)" }}>
-        <button
-          onClick={() => setMode("month")}
-          className="flex-1 text-xs font-bold py-2 rounded-md"
-          style={{ background: mode === "month" ? "var(--brass)" : "transparent", color: mode === "month" ? "white" : "var(--ink-soft)" }}
-        >
-          月間（今月）
-        </button>
-        <button
-          onClick={() => setMode("range")}
-          className="flex-1 text-xs font-bold py-2 rounded-md"
-          style={{ background: mode === "range" ? "var(--brass)" : "transparent", color: mode === "range" ? "white" : "var(--ink-soft)" }}
-        >
-          任意の期間
-        </button>
+      <div className="flex gap-1 p-1 rounded-lg mb-3" style={{ background: "var(--paper-alt)", border: "1px solid var(--rule)" }}>
+        <button onClick={() => setMode("month")} className="flex-1 text-xs font-bold py-2 rounded-md" style={{ background: mode === "month" ? "var(--brass)" : "transparent", color: mode === "month" ? "white" : "var(--ink-soft)" }}>月間（今月）</button>
+        <button onClick={() => setMode("range")} className="flex-1 text-xs font-bold py-2 rounded-md" style={{ background: mode === "range" ? "var(--brass)" : "transparent", color: mode === "range" ? "white" : "var(--ink-soft)" }}>任意の期間</button>
       </div>
 
       {mode === "range" && (
-        <div className="flex items-center gap-2 mb-4">
+        <div className="flex items-center gap-2 mb-3">
           <input type="date" value={range.start} onChange={(e) => setRange((r) => ({ ...r, start: e.target.value }))} className="input mono text-xs" />
           <span className="text-xs" style={{ color: "var(--ink-soft)" }}>〜</span>
           <input type="date" value={range.end} onChange={(e) => setRange((r) => ({ ...r, end: e.target.value }))} className="input mono text-xs" />
         </div>
       )}
+
+      <div className="flex gap-1 p-1 rounded-lg mb-4" style={{ background: "var(--paper)", border: "1px solid var(--rule)" }}>
+        <button onClick={() => setGroupBy("service")} className="flex-1 text-[11px] font-bold py-1.5 rounded-md" style={{ background: groupBy === "service" ? "var(--ink)" : "transparent", color: groupBy === "service" ? "white" : "var(--ink-soft)" }}>サービス別</button>
+        <button onClick={() => setGroupBy("method")} className="flex-1 text-[11px] font-bold py-1.5 rounded-md" style={{ background: groupBy === "method" ? "var(--ink)" : "transparent", color: groupBy === "method" ? "white" : "var(--ink-soft)" }}>支払い方法別</button>
+      </div>
 
       <p className="text-[11px] mb-4" style={{ color: "var(--ink-soft)" }}>支払い履歴に記録された実際の支払いのみを集計しています。</p>
 
@@ -666,9 +863,7 @@ function SubsAnalysis({ history, today }) {
         <EmptyState text="この期間の支払い履歴がありません。" />
       ) : (
         <>
-          <div className="flex justify-center mb-5">
-            <DonutChart segments={segments} total={total} />
-          </div>
+          <div className="flex justify-center mb-5"><DonutChart segments={segments} total={total} /></div>
           <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--rule)", background: "var(--paper-alt)" }}>
             {segments.map((seg, i) => (
               <div key={seg.name + i} className="flex items-center justify-between px-4 py-3" style={{ borderTop: i === 0 ? "none" : "1px solid var(--rule)" }}>
@@ -696,19 +891,7 @@ function DonutChart({ segments, total }) {
         {segments.map((seg, i) => {
           const frac = total > 0 ? seg.value / total : 0;
           const dash = frac * c;
-          const el = (
-            <circle
-              key={i}
-              cx={size / 2}
-              cy={size / 2}
-              r={r}
-              fill="none"
-              stroke={seg.color}
-              strokeWidth={stroke}
-              strokeDasharray={`${dash} ${c - dash}`}
-              strokeDashoffset={-offsetAcc}
-            />
-          );
+          const el = <circle key={i} cx={size / 2} cy={size / 2} r={r} fill="none" stroke={seg.color} strokeWidth={stroke} strokeDasharray={`${dash} ${c - dash}`} strokeDashoffset={-offsetAcc} />;
           offsetAcc += dash;
           return el;
         })}
@@ -719,34 +902,10 @@ function DonutChart({ segments, total }) {
   );
 }
 
-function IconButton({ icon: Icon, label, onClick, tone }) {
-  return (
-    <button
-      onClick={onClick}
-      className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded"
-      style={{ color: tone === "clay" ? "var(--clay)" : "var(--ink-soft)", background: "var(--paper)" }}
-    >
-      <Icon size={13} /> {label}
-    </button>
-  );
-}
-
-function EmptyState({ text }) {
-  return (
-    <div className="text-sm rounded-lg p-8 text-center" style={{ background: "var(--paper-alt)", border: "1px dashed var(--rule)", color: "var(--ink-soft)" }}>
-      {text}
-    </div>
-  );
-}
-
-function SubModal({ mode, initial, onCancel, onSave }) {
+function SubModal({ mode, initial, paymentMethodSuggestions, onCancel, onSave }) {
   const isResume = mode === "resume";
   const [form, setForm] = useState(
-    initial || {
-      name: "", amount: "", category: SUB_CATEGORIES[0],
-      firstPaymentDate: todayStr(), intervalValue: 1, intervalUnit: "month",
-      reminderDays: 3, memo: "",
-    }
+    initial || { name: "", amount: "", category: SUB_CATEGORIES[0], paymentMethod: "", firstPaymentDate: todayStr(), intervalValue: 1, intervalUnit: "month", reminderDays: 3, memo: "" }
   );
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const valid = form.name.trim() && Number(form.amount) > 0 && form.firstPaymentDate && Number(form.intervalValue) > 0;
@@ -754,26 +913,24 @@ function SubModal({ mode, initial, onCancel, onSave }) {
   return (
     <Modal onCancel={onCancel} title={isResume ? "サブスクを再開" : mode === "edit" ? "サブスクを編集" : "サブスクを追加"}>
       {isResume && (
-        <p className="text-xs mb-3 px-3 py-2 rounded" style={{ background: "var(--brass-soft)", color: "var(--brass)" }}>
-          支払日や間隔を編集しても同じサブスクとして記録されます。再開後の初回支払日を確認してください。
-        </p>
+        <p className="text-xs mb-3 px-3 py-2 rounded" style={{ background: "var(--brass-soft)", color: "var(--brass)" }}>支払日や間隔を編集しても同じサブスクとして記録されます。再開後の初回支払日を確認してください。</p>
       )}
-      <Field label="名前">
-        <input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="例：Netflix" className="input" />
-      </Field>
+      <Field label="名前"><input value={form.name} onChange={(e) => set("name", e.target.value)} placeholder="例：Netflix" className="input" /></Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="金額">
-          <input type="number" min="0" value={form.amount} onChange={(e) => set("amount", e.target.value)} placeholder="1490" className="input mono" />
-        </Field>
+        <Field label="金額"><input type="number" min="0" value={form.amount} onChange={(e) => set("amount", e.target.value)} placeholder="1490" className="input mono" /></Field>
         <Field label="カテゴリ">
           <select value={form.category} onChange={(e) => set("category", e.target.value)} className="input">
             {SUB_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
         </Field>
       </div>
-      <Field label="初回支払い日">
-        <input type="date" value={form.firstPaymentDate} onChange={(e) => set("firstPaymentDate", e.target.value)} className="input mono" />
+      <Field label="支払い方法（任意）">
+        <input list="payment-methods" value={form.paymentMethod || ""} onChange={(e) => set("paymentMethod", e.target.value)} placeholder="例：楽天カード" className="input" />
+        <datalist id="payment-methods">
+          {paymentMethodSuggestions?.map((m) => <option key={m} value={m} />)}
+        </datalist>
       </Field>
+      <Field label="初回支払い日"><input type="date" value={form.firstPaymentDate} onChange={(e) => set("firstPaymentDate", e.target.value)} className="input mono" /></Field>
       <Field label="支払い周期">
         <div className="flex gap-2">
           <input type="number" min="1" value={form.intervalValue} onChange={(e) => set("intervalValue", e.target.value)} className="input mono w-20" />
@@ -786,12 +943,8 @@ function SubModal({ mode, initial, onCancel, onSave }) {
         </div>
         <p className="text-[11px] mt-1" style={{ color: "var(--ink-soft)" }}>例：1週間の無料体験、6ヶ月プランなども設定できます</p>
       </Field>
-      <Field label="何日前にリマインドするか">
-        <input type="number" min="0" value={form.reminderDays} onChange={(e) => set("reminderDays", e.target.value)} className="input mono" />
-      </Field>
-      <Field label="メモ（任意）">
-        <input value={form.memo} onChange={(e) => set("memo", e.target.value)} className="input" />
-      </Field>
+      <Field label="何日前にリマインドするか"><input type="number" min="0" value={form.reminderDays} onChange={(e) => set("reminderDays", e.target.value)} className="input mono" /></Field>
+      <Field label="メモ（任意）"><input value={form.memo} onChange={(e) => set("memo", e.target.value)} className="input" /></Field>
       <ModalActions onCancel={onCancel} onSave={() => valid && onSave(form)} disabled={!valid} saveLabel={isResume ? "再開する" : "保存"} />
     </Modal>
   );
@@ -814,7 +967,7 @@ function buildCalendarGrid(year, month) {
 function CalendarTab({ subs, history, txns, today, onAddTxn }) {
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
-  const [month, setMonth] = useState(now.getMonth()); // 0-indexed
+  const [month, setMonth] = useState(now.getMonth());
   const [selectedDate, setSelectedDate] = useState(today);
 
   const monthKey = `${year}-${pad2(month + 1)}`;
@@ -822,21 +975,10 @@ function CalendarTab({ subs, history, txns, today, onAddTxn }) {
 
   const dayEvents = useMemo(() => {
     const map = {};
-    const push = (dateStr, ev) => {
-      if (!map[dateStr]) map[dateStr] = [];
-      map[dateStr].push(ev);
-    };
-    history.forEach((h) => {
-      if (h.date.slice(0, 7) === monthKey) push(h.date, { type: "sub", label: h.name, amount: Number(h.amount) });
-    });
-    subs.forEach((s) => {
-      if (s.status === "active" && s.nextPaymentDate.slice(0, 7) === monthKey) {
-        push(s.nextPaymentDate, { type: "sub-upcoming", label: s.name, amount: Number(s.amount) });
-      }
-    });
-    txns.forEach((t) => {
-      if (t.date.slice(0, 7) === monthKey) push(t.date, { type: t.type, label: t.category, amount: Number(t.amount) });
-    });
+    const push = (dateStr, ev) => { (map[dateStr] ||= []).push(ev); };
+    history.forEach((h) => { if (h.date.slice(0, 7) === monthKey) push(h.date, { type: "sub", label: h.name, amount: Number(h.amount) }); });
+    subs.forEach((s) => { if (s.status === "active" && s.nextPaymentDate.slice(0, 7) === monthKey) push(s.nextPaymentDate, { type: "sub-upcoming", label: s.name, amount: Number(s.amount) }); });
+    txns.forEach((t) => { if (t.date.slice(0, 7) === monthKey) push(t.date, { type: t.type, label: t.category, amount: Number(t.amount) }); });
     return map;
   }, [monthKey, history, subs, txns]);
 
@@ -852,8 +994,7 @@ function CalendarTab({ subs, history, txns, today, onAddTxn }) {
     let m = month + delta, y = year;
     if (m < 0) { m = 11; y -= 1; }
     if (m > 11) { m = 0; y += 1; }
-    setMonth(m);
-    setYear(y);
+    setMonth(m); setYear(y);
   };
 
   const EVENT_STYLE = {
@@ -888,9 +1029,7 @@ function CalendarTab({ subs, history, txns, today, onAddTxn }) {
 
       <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--rule)", background: "var(--paper-alt)" }}>
         <div className="grid grid-cols-7">
-          {WEEKDAY_LABELS.map((w, i) => (
-            <div key={w} className="text-center text-[11px] font-bold py-1.5" style={{ color: i === 0 ? "var(--clay)" : "var(--ink-soft)", borderBottom: "1px solid var(--rule)" }}>{w}</div>
-          ))}
+          {WEEKDAY_LABELS.map((w, i) => <div key={w} className="text-center text-[11px] font-bold py-1.5" style={{ color: i === 0 ? "var(--clay)" : "var(--ink-soft)", borderBottom: "1px solid var(--rule)" }}>{w}</div>)}
         </div>
         <div className="grid grid-cols-7">
           {cells.map((d, i) => {
@@ -900,21 +1039,9 @@ function CalendarTab({ subs, history, txns, today, onAddTxn }) {
             const isToday = dateStr === today;
             const isSelected = dateStr === selectedDate;
             return (
-              <button
-                key={i}
-                onClick={() => setSelectedDate(dateStr)}
-                className="text-left p-1 border-r border-b flex flex-col gap-0.5 overflow-hidden"
-                style={{ borderColor: "var(--rule)", minHeight: 64, background: isSelected ? "var(--paper)" : "transparent" }}
-              >
-                <span
-                  className="mono text-[11px] w-4 h-4 flex items-center justify-center rounded-full"
-                  style={{ background: isToday ? "var(--ink)" : "transparent", color: isToday ? "white" : "var(--ink)" }}
-                >
-                  {d}
-                </span>
-                {events.slice(0, 2).map((ev, j) => (
-                  <span key={j} className="text-[9px] px-1 rounded truncate" style={EVENT_STYLE[ev.type]}>{ev.label}</span>
-                ))}
+              <button key={i} onClick={() => setSelectedDate(dateStr)} className="text-left p-1 border-r border-b flex flex-col gap-0.5 overflow-hidden" style={{ borderColor: "var(--rule)", minHeight: 64, background: isSelected ? "var(--paper)" : "transparent" }}>
+                <span className="mono text-[11px] w-4 h-4 flex items-center justify-center rounded-full" style={{ background: isToday ? "var(--ink)" : "transparent", color: isToday ? "white" : "var(--ink)" }}>{d}</span>
+                {events.slice(0, 2).map((ev, j) => <span key={j} className="text-[9px] px-1 rounded truncate" style={EVENT_STYLE[ev.type]}>{ev.label}</span>)}
                 {events.length > 2 && <span className="text-[9px]" style={{ color: "var(--ink-soft)" }}>+{events.length - 2}</span>}
               </button>
             );
@@ -962,11 +1089,10 @@ function LegendDot({ color, outline, label }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Transactions                                                         */
+/* Transactions (list+search / budget)                                  */
 /* ------------------------------------------------------------------ */
 
-function TxnsTab({ txns, monthIncome, monthExpense, freeMoney, onAdd, onDelete }) {
-  const sorted = useMemo(() => [...txns].sort((a, b) => (a.date < b.date ? 1 : -1)), [txns]);
+function TxnsTab({ txnTab, setTxnTab, txns, monthIncome, monthExpense, freeMoney, budgets, monthExpenseByCategory, onSaveBudgets, onAdd, onEdit, onDelete }) {
   return (
     <div>
       <div className="grid grid-cols-3 gap-2 mb-4">
@@ -974,34 +1100,77 @@ function TxnsTab({ txns, monthIncome, monthExpense, freeMoney, onAdd, onDelete }
         <StatCard label="今月の支出" value={fmtYen(monthExpense)} accent="var(--clay)" />
         <StatCard label="収支" value={fmtYen(freeMoney)} />
       </div>
-      <div className="flex gap-2 mb-4">
-        <button onClick={() => onAdd("income")} className="flex-1 flex items-center justify-center gap-1 text-sm font-bold px-3 py-2.5 rounded-lg" style={{ background: "var(--green-soft)", color: "var(--green)" }}>
-          <Plus size={15} /> 収入を追加
-        </button>
-        <button onClick={() => onAdd("expense")} className="flex-1 flex items-center justify-center gap-1 text-sm font-bold px-3 py-2.5 rounded-lg" style={{ background: "var(--clay-soft)", color: "var(--clay)" }}>
-          <Plus size={15} /> 支出を追加
-        </button>
+
+      <div className="flex gap-1 p-1 rounded-lg mb-4" style={{ background: "var(--paper-alt)", border: "1px solid var(--rule)" }}>
+        <SegButton active={txnTab === "list"} onClick={() => setTxnTab("list")} icon={List} label="記録" />
+        <SegButton active={txnTab === "budget"} onClick={() => setTxnTab("budget")} icon={Target} label="予算" />
       </div>
 
-      {sorted.length === 0 ? (
-        <EmptyState text="収支の記録がありません。上のボタンから追加してください。" />
+      {txnTab === "list" && <TxnsList txns={txns} onAdd={onAdd} onEdit={onEdit} onDelete={onDelete} />}
+      {txnTab === "budget" && <BudgetPanel budgets={budgets} monthExpenseByCategory={monthExpenseByCategory} onSave={onSaveBudgets} />}
+    </div>
+  );
+}
+
+function TxnsList({ txns, onAdd, onEdit, onDelete }) {
+  const [search, setSearch] = useState("");
+  const [filterType, setFilterType] = useState("all");
+  const [filterCategory, setFilterCategory] = useState("all");
+
+  const categories = filterType === "income" ? INCOME_CATEGORIES : filterType === "expense" ? EXPENSE_CATEGORIES : ALL_CATEGORIES;
+
+  const filtered = useMemo(() => {
+    return txns
+      .filter((t) => {
+        if (filterType !== "all" && t.type !== filterType) return false;
+        if (filterCategory !== "all" && t.category !== filterCategory) return false;
+        if (search && !t.category.includes(search) && !(t.note || "").includes(search)) return false;
+        return true;
+      })
+      .sort((a, b) => (a.date < b.date ? 1 : -1));
+  }, [txns, search, filterType, filterCategory]);
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-3">
+        <button onClick={() => onAdd("income")} className="flex-1 flex items-center justify-center gap-1 text-sm font-bold px-3 py-2.5 rounded-lg" style={{ background: "var(--green-soft)", color: "var(--green)" }}><Plus size={15} /> 収入を追加</button>
+        <button onClick={() => onAdd("expense")} className="flex-1 flex items-center justify-center gap-1 text-sm font-bold px-3 py-2.5 rounded-lg" style={{ background: "var(--clay-soft)", color: "var(--clay)" }}><Plus size={15} /> 支出を追加</button>
+      </div>
+
+      <div className="rounded-lg p-2.5 mb-3 space-y-2" style={{ background: "var(--paper-alt)", border: "1px solid var(--rule)" }}>
+        <div className="relative">
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2" style={{ color: "var(--ink-soft)" }} />
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="カテゴリ・メモで検索" className="input pl-7 text-xs" />
+        </div>
+        <div className="flex gap-2">
+          <select value={filterType} onChange={(e) => { setFilterType(e.target.value); setFilterCategory("all"); }} className="input text-xs flex-1">
+            <option value="all">すべて</option>
+            <option value="income">収入</option>
+            <option value="expense">支出</option>
+          </select>
+          <select value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} className="input text-xs flex-1">
+            <option value="all">全カテゴリ</option>
+            {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {filtered.length === 0 ? (
+        <EmptyState text={txns.length === 0 ? "収支の記録がありません。上のボタンから追加してください。" : "条件に一致する記録がありません。"} />
       ) : (
         <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--rule)", background: "var(--paper-alt)" }}>
-          {sorted.map((t, i) => (
+          {filtered.map((t, i) => (
             <div key={t.id} className="flex items-center justify-between px-4 py-3" style={{ borderTop: i === 0 ? "none" : "1px solid var(--rule)" }}>
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-bold" style={{ background: t.type === "income" ? "var(--green-soft)" : "var(--clay-soft)", color: t.type === "income" ? "var(--green)" : "var(--clay)" }}>
-                    {t.category}
-                  </span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-bold" style={{ background: t.type === "income" ? "var(--green-soft)" : "var(--clay-soft)", color: t.type === "income" ? "var(--green)" : "var(--clay)" }}>{t.category}</span>
                   <span className="text-xs mono" style={{ color: "var(--ink-soft)" }}>{fmtDate(t.date)}</span>
                 </div>
                 {t.note && <div className="text-xs mt-1 truncate" style={{ color: "var(--ink-soft)" }}>{t.note}</div>}
               </div>
-              <div className="flex items-center gap-3 shrink-0">
-                <span className="mono font-bold" style={{ color: t.type === "income" ? "var(--green)" : "var(--clay)" }}>
-                  {t.type === "income" ? "+" : "-"}{fmtYen(t.amount)}
-                </span>
+              <div className="flex items-center gap-2.5 shrink-0">
+                <span className="mono font-bold" style={{ color: t.type === "income" ? "var(--green)" : "var(--clay)" }}>{t.type === "income" ? "+" : "-"}{fmtYen(t.amount)}</span>
+                <button onClick={() => onEdit(t)} style={{ color: "var(--ink-soft)" }}><Edit2 size={14} /></button>
                 <button onClick={() => onDelete(t.id)} style={{ color: "var(--ink-soft)" }}><Trash2 size={14} /></button>
               </div>
             </div>
@@ -1012,28 +1181,61 @@ function TxnsTab({ txns, monthIncome, monthExpense, freeMoney, onAdd, onDelete }
   );
 }
 
-function TxnModal({ type, defaultDate, onCancel, onSave }) {
+function BudgetPanel({ budgets, monthExpenseByCategory, onSave }) {
+  const [draft, setDraft] = useState(budgets);
+  useEffect(() => { setDraft(budgets); }, [budgets]);
+  const setVal = (cat, v) => setDraft((d) => ({ ...d, [cat]: v }));
+  const save = () => onSave(Object.fromEntries(EXPENSE_CATEGORIES.map((c) => [c, Number(draft[c]) || 0])));
+
+  return (
+    <div>
+      <p className="text-xs mb-3" style={{ color: "var(--ink-soft)" }}>カテゴリごとに今月の予算上限を設定できます（0円または未入力の場合は表示のみ非表示になります）。</p>
+      <div className="space-y-2.5">
+        {EXPENSE_CATEGORIES.map((cat) => {
+          const limit = Number(budgets[cat]) || 0;
+          const used = monthExpenseByCategory[cat] || 0;
+          const ratio = limit > 0 ? used / limit : 0;
+          const over = limit > 0 && used > limit;
+          const barColor = !limit ? "var(--rule)" : over ? "var(--clay)" : ratio > 0.8 ? "var(--brass)" : "var(--green)";
+          return (
+            <div key={cat} className="rounded-lg p-3" style={{ background: "var(--paper-alt)", border: "1px solid var(--rule)" }}>
+              <div className="flex items-center justify-between mb-1.5 gap-2">
+                <span className="text-sm font-bold" style={{ color: "var(--ink)" }}>{cat}</span>
+                <input type="number" min="0" value={draft[cat] ?? ""} onChange={(e) => setVal(cat, e.target.value)} placeholder="未設定" className="input mono w-28 text-right text-xs py-1" />
+              </div>
+              {limit > 0 && (
+                <>
+                  <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--rule)" }}>
+                    <div style={{ width: `${Math.min(ratio * 100, 100)}%`, background: barColor, height: "100%" }} />
+                  </div>
+                  <div className="text-[11px] mt-1 mono" style={{ color: over ? "var(--clay)" : "var(--ink-soft)" }}>{fmtYen(used)} / {fmtYen(limit)}{over ? "（予算超過）" : ""}</div>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <button onClick={save} className="w-full mt-4 font-bold text-sm px-4 py-2.5 rounded-lg text-white" style={{ background: "var(--ink)" }}>予算を保存</button>
+    </div>
+  );
+}
+
+function TxnModal({ type, defaultDate, initial, onCancel, onSave }) {
   const cats = type === "income" ? INCOME_CATEGORIES : EXPENSE_CATEGORIES;
-  const [form, setForm] = useState({ type, category: cats[0], amount: "", date: defaultDate, note: "" });
+  const [form, setForm] = useState(initial ? { ...initial } : { type, category: cats[0], amount: "", date: defaultDate, note: "" });
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const valid = Number(form.amount) > 0 && form.date;
   return (
-    <Modal onCancel={onCancel} title={type === "income" ? "収入を追加" : "支出を追加"}>
+    <Modal onCancel={onCancel} title={initial ? "記録を編集" : type === "income" ? "収入を追加" : "支出を追加"}>
       <Field label="カテゴリ">
         <select value={form.category} onChange={(e) => set("category", e.target.value)} className="input">
           {cats.map((c) => <option key={c} value={c}>{c}</option>)}
         </select>
       </Field>
-      <Field label="金額">
-        <input type="number" min="0" value={form.amount} onChange={(e) => set("amount", e.target.value)} className="input mono" />
-      </Field>
-      <Field label="日付">
-        <input type="date" value={form.date} onChange={(e) => set("date", e.target.value)} className="input mono" />
-      </Field>
-      <Field label="メモ（任意）">
-        <input value={form.note} onChange={(e) => set("note", e.target.value)} className="input" />
-      </Field>
-      <ModalActions onCancel={onCancel} onSave={() => valid && onSave(form)} disabled={!valid} />
+      <Field label="金額"><input type="number" min="0" value={form.amount} onChange={(e) => set("amount", e.target.value)} className="input mono" /></Field>
+      <Field label="日付"><input type="date" value={form.date} onChange={(e) => set("date", e.target.value)} className="input mono" /></Field>
+      <Field label="メモ（任意）"><input value={form.note} onChange={(e) => set("note", e.target.value)} className="input" /></Field>
+      <ModalActions onCancel={onCancel} onSave={() => valid && onSave(form)} disabled={!valid} saveLabel={initial ? "更新" : "保存"} />
     </Modal>
   );
 }
@@ -1042,36 +1244,60 @@ function TxnModal({ type, defaultDate, onCancel, onSave }) {
 /* Assets                                                                */
 /* ------------------------------------------------------------------ */
 
-function AssetsTab({ assets, onSave, totalValuation, totalGainLoss }) {
+function LineChart({ data, color = "var(--ink)", height = 140 }) {
+  if (!data || data.length === 0) return null;
+  const width = 560, padding = 28;
+  const values = data.map((d) => d.value);
+  const min = Math.min(...values, 0);
+  const max = Math.max(...values, 1);
+  const range = max - min || 1;
+  const stepX = data.length > 1 ? (width - padding * 2) / (data.length - 1) : 0;
+  const points = data.map((d, i) => ({ x: padding + i * stepX, y: padding + (1 - (d.value - min) / range) * (height - padding * 2) }));
+  const pathD = points.map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+  const areaD = `${pathD} L${points[points.length - 1].x.toFixed(1)},${height - padding} L${points[0].x.toFixed(1)},${height - padding} Z`;
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="w-full" style={{ height }}>
+      <path d={areaD} fill={color} opacity="0.08" />
+      <path d={pathD} fill="none" stroke={color} strokeWidth="2" />
+      {points.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="2.5" fill={color} />)}
+      <text x={padding} y={height - 6} style={{ fontSize: 10, fill: "var(--ink-soft)" }}>{fmtDate(data[0].date)}</text>
+      <text x={width - padding} y={height - 6} textAnchor="end" style={{ fontSize: 10, fill: "var(--ink-soft)" }}>{fmtDate(data[data.length - 1].date)}</text>
+    </svg>
+  );
+}
+
+function AssetsTab({ assets, assetHistory, onSave, totalValuation, totalGainLoss }) {
   const [draft, setDraft] = useState(assets);
   const [dirty, setDirty] = useState(false);
-
   useEffect(() => { setDraft(assets); }, [assets]);
 
-  const setField = (key, field, val) => {
-    setDraft((d) => ({ ...d, [key]: { ...d[key], [field]: val } }));
-    setDirty(true);
-  };
-
+  const setField = (key, field, val) => { setDraft((d) => ({ ...d, [key]: { ...d[key], [field]: val } })); setDirty(true); };
   const save = () => {
     const cleaned = {};
-    ASSET_TYPES.forEach((t) => {
-      cleaned[t.key] = {
-        valuation: Number(draft[t.key]?.valuation) || 0,
-        gainLoss: Number(draft[t.key]?.gainLoss) || 0,
-      };
-    });
+    ASSET_TYPES.forEach((t) => { cleaned[t.key] = { valuation: Number(draft[t.key]?.valuation) || 0, gainLoss: Number(draft[t.key]?.gainLoss) || 0 }; });
     onSave(cleaned);
     setDirty(false);
   };
 
+  const chartData = useMemo(() => assetHistory.map((h) => ({ date: h.date, value: h.totalValuation })), [assetHistory]);
+  const prevSnapshot = assetHistory.length > 1 ? assetHistory[assetHistory.length - 2] : null;
+  const diff = prevSnapshot ? totalValuation - prevSnapshot.totalValuation : null;
+
   return (
     <div>
-      <div className="rounded-xl p-5 mb-5" style={{ background: "var(--brass)", color: "white" }}>
+      <div className="rounded-xl p-5 mb-4" style={{ background: "var(--brass)", color: "white" }}>
         <div className="text-xs opacity-85">資産評価額合計（自由に使えるお金には含みません）</div>
         <div className="mono text-3xl font-bold mt-1">{fmtYen(totalValuation)}</div>
         <div className="mono text-sm mt-1 opacity-90">評価損益 {totalGainLoss >= 0 ? "+" : ""}{fmtYen(totalGainLoss)}</div>
+        {diff !== null && <div className="mono text-xs mt-1 opacity-80">前回記録比 {diff >= 0 ? "+" : ""}{fmtYen(diff)}</div>}
       </div>
+
+      {chartData.length >= 2 && (
+        <div className="rounded-lg p-3 mb-5" style={{ background: "var(--paper-alt)", border: "1px solid var(--rule)" }}>
+          <div className="text-xs font-bold mb-1" style={{ color: "var(--ink-soft)" }}>資産評価額の推移</div>
+          <LineChart data={chartData} color="var(--brass)" />
+        </div>
+      )}
 
       <div className="space-y-3">
         {ASSET_TYPES.map((t) => {
@@ -1081,24 +1307,15 @@ function AssetsTab({ assets, onSave, totalValuation, totalGainLoss }) {
             <div key={t.key} className="rounded-lg p-4" style={{ background: "var(--paper-alt)", border: "1px solid var(--rule)" }}>
               <div className="text-sm font-bold mb-2" style={{ color: "var(--ink)" }}>{t.label}</div>
               <div className="grid grid-cols-2 gap-3">
-                <Field label="資産評価額">
-                  <input type="number" value={v.valuation} onChange={(e) => setField(t.key, "valuation", e.target.value)} className="input mono" />
-                </Field>
-                <Field label="評価損益">
-                  <input type="number" value={v.gainLoss} onChange={(e) => setField(t.key, "gainLoss", e.target.value)} className="input mono" style={{ color: gl >= 0 ? "var(--green)" : "var(--clay)" }} />
-                </Field>
+                <Field label="資産評価額"><input type="number" value={v.valuation} onChange={(e) => setField(t.key, "valuation", e.target.value)} className="input mono" /></Field>
+                <Field label="評価損益"><input type="number" value={v.gainLoss} onChange={(e) => setField(t.key, "gainLoss", e.target.value)} className="input mono" style={{ color: gl >= 0 ? "var(--green)" : "var(--clay)" }} /></Field>
               </div>
             </div>
           );
         })}
       </div>
 
-      <button
-        onClick={save}
-        disabled={!dirty}
-        className="w-full mt-5 flex items-center justify-center gap-1.5 font-bold text-sm px-4 py-3 rounded-lg text-white"
-        style={{ background: dirty ? "var(--ink)" : "var(--rule)", cursor: dirty ? "pointer" : "default" }}
-      >
+      <button onClick={save} disabled={!dirty} className="w-full mt-5 flex items-center justify-center gap-1.5 font-bold text-sm px-4 py-3 rounded-lg text-white" style={{ background: dirty ? "var(--ink)" : "var(--rule)", cursor: dirty ? "pointer" : "default" }}>
         <Check size={15} /> {dirty ? "資産情報を保存" : "保存済み"}
       </button>
     </div>
@@ -1106,50 +1323,122 @@ function AssetsTab({ assets, onSave, totalValuation, totalGainLoss }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Shared modal bits                                                     */
+/* Monthly report                                                        */
 /* ------------------------------------------------------------------ */
 
-function Modal({ title, children, onCancel }) {
+function ReportTab({ today, txns, history, subs, assetHistory, assetValuationTotal }) {
+  const thisMonthKey = today.slice(0, 7);
+  const prevMonthKey = shiftMonthKey(thisMonthKey, -1);
+
+  const sumFor = (list, key, type) => list.filter((x) => x.date.slice(0, 7) === key && (!type || x.type === type)).reduce((s, x) => s + Number(x.amount), 0);
+
+  const thisIncome = sumFor(txns, thisMonthKey, "income");
+  const thisExpense = sumFor(txns, thisMonthKey, "expense");
+  const thisSub = sumFor(history, thisMonthKey);
+  const prevIncome = sumFor(txns, prevMonthKey, "income");
+  const prevExpense = sumFor(txns, prevMonthKey, "expense");
+  const prevSub = sumFor(history, prevMonthKey);
+  const thisNet = thisIncome - thisExpense - thisSub;
+  const prevNet = prevIncome - prevExpense - prevSub;
+
+  const topExpenseCategories = useMemo(() => {
+    const m = {};
+    txns.filter((t) => t.type === "expense" && t.date.slice(0, 7) === thisMonthKey).forEach((t) => { m[t.category] = (m[t.category] || 0) + Number(t.amount); });
+    return Object.entries(m).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 5);
+  }, [txns, thisMonthKey]);
+
+  const topSubs = useMemo(() => {
+    const m = {};
+    history.filter((h) => h.date.slice(0, 7) === thisMonthKey).forEach((h) => { m[h.name] = (m[h.name] || 0) + Number(h.amount); });
+    return Object.entries(m).map(([name, value]) => ({ name, value })).sort((a, b) => b.value - a.value).slice(0, 5);
+  }, [history, thisMonthKey]);
+
+  const maxExpenseCat = topExpenseCategories[0]?.value || 1;
+  const maxSub = topSubs[0]?.value || 1;
+
+  const prevAssetSnapshot = useMemo(() => {
+    const candidates = assetHistory.filter((h) => h.date < `${thisMonthKey}-01`);
+    return candidates.length ? candidates[candidates.length - 1] : null;
+  }, [assetHistory, thisMonthKey]);
+  const assetDiff = prevAssetSnapshot ? assetValuationTotal - prevAssetSnapshot.totalValuation : null;
+
+  const Delta = ({ value, invert }) => {
+    if (value === 0) return <span className="mono text-xs" style={{ color: "var(--ink-soft)" }}>±0</span>;
+    const good = invert ? value < 0 : value > 0;
+    return <span className="mono text-xs font-bold" style={{ color: good ? "var(--green)" : "var(--clay)" }}>{value > 0 ? "+" : ""}{fmtYen(value)}</span>;
+  };
+
   return (
-    <div className="fixed inset-0 z-40 flex items-end sm:items-center justify-center p-0 sm:p-4" style={{ background: "rgba(27,42,74,0.45)" }} onClick={onCancel}>
-      <div
-        className="w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-5 max-h-[90vh] overflow-y-auto"
-        style={{ background: "var(--paper-alt)" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="serif text-lg font-bold" style={{ color: "var(--ink)" }}>{title}</h3>
-          <button onClick={onCancel} style={{ color: "var(--ink-soft)" }}><X size={18} /></button>
-        </div>
-        {children}
+    <div className="space-y-6">
+      <div>
+        <h2 className="serif text-lg font-bold mb-1" style={{ color: "var(--ink)" }}>{thisMonthKey.replace("-", "年")}月のレポート</h2>
+        <p className="text-xs" style={{ color: "var(--ink-soft)" }}>先月（{prevMonthKey.replace("-", "年")}月）との比較</p>
       </div>
-    </div>
-  );
-}
 
-function Field({ label, children }) {
-  return (
-    <div className="mb-3">
-      <label className="block text-xs font-bold mb-1" style={{ color: "var(--ink-soft)" }}>{label}</label>
-      {children}
-    </div>
-  );
-}
+      <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--rule)", background: "var(--paper-alt)" }}>
+        {[
+          { label: "収入", now: thisIncome, prev: prevIncome, invert: false },
+          { label: "支出", now: thisExpense, prev: prevExpense, invert: true },
+          { label: "サブスク支払い", now: thisSub, prev: prevSub, invert: true },
+          { label: "自由に使えるお金", now: thisNet, prev: prevNet, invert: false },
+        ].map((row, i) => (
+          <div key={row.label} className="flex items-center justify-between px-4 py-3" style={{ borderTop: i === 0 ? "none" : "1px solid var(--rule)" }}>
+            <span className="text-sm" style={{ color: "var(--ink)" }}>{row.label}</span>
+            <div className="text-right">
+              <div className="mono font-bold" style={{ color: "var(--ink)" }}>{fmtYen(row.now)}</div>
+              <Delta value={row.now - row.prev} invert={row.invert} />
+            </div>
+          </div>
+        ))}
+      </div>
 
-function ModalActions({ onCancel, onSave, disabled, saveLabel = "保存" }) {
-  return (
-    <div className="flex gap-2 mt-4">
-      <button onClick={onCancel} className="flex-1 text-sm font-bold px-4 py-2.5 rounded-lg" style={{ background: "var(--paper)", color: "var(--ink-soft)", border: "1px solid var(--rule)" }}>
-        キャンセル
-      </button>
-      <button
-        onClick={onSave}
-        disabled={disabled}
-        className="flex-1 text-sm font-bold px-4 py-2.5 rounded-lg text-white"
-        style={{ background: disabled ? "var(--rule)" : "var(--ink)" }}
-      >
-        {saveLabel}
-      </button>
+      <div>
+        <h3 className="text-sm font-bold mb-2" style={{ color: "var(--ink)" }}>支出カテゴリ トップ5（今月）</h3>
+        {topExpenseCategories.length === 0 ? <EmptyState text="今月の支出記録がありません。" /> : (
+          <div className="space-y-2">
+            {topExpenseCategories.map((c) => (
+              <div key={c.name}>
+                <div className="flex items-center justify-between text-xs mb-1">
+                  <span style={{ color: "var(--ink)" }}>{c.name}</span>
+                  <span className="mono font-bold" style={{ color: "var(--ink)" }}>{fmtYen(c.value)}</span>
+                </div>
+                <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--rule)" }}>
+                  <div style={{ width: `${(c.value / maxExpenseCat) * 100}%`, background: "var(--clay)", height: "100%" }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <h3 className="text-sm font-bold mb-2" style={{ color: "var(--ink)" }}>サブスク支払い トップ5（今月）</h3>
+        {topSubs.length === 0 ? <EmptyState text="今月のサブスク支払い履歴がありません。" /> : (
+          <div className="space-y-2">
+            {topSubs.map((c) => (
+              <div key={c.name}>
+                <div className="flex items-center justify-between text-xs mb-1">
+                  <span style={{ color: "var(--ink)" }}>{c.name}</span>
+                  <span className="mono font-bold" style={{ color: "var(--ink)" }}>{fmtYen(c.value)}</span>
+                </div>
+                <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--rule)" }}>
+                  <div style={{ width: `${(c.value / maxSub) * 100}%`, background: "var(--brass)", height: "100%" }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-lg p-4" style={{ background: "var(--brass-soft)", border: "1px solid var(--brass)" }}>
+        <div className="text-xs" style={{ color: "var(--brass)" }}>資産評価額（現在）</div>
+        <div className="mono text-xl font-bold mt-1" style={{ color: "var(--ink)" }}>{fmtYen(assetValuationTotal)}</div>
+        {assetDiff !== null ? (
+          <div className="mono text-xs mt-1" style={{ color: assetDiff >= 0 ? "var(--green)" : "var(--clay)" }}>先月末比 {assetDiff >= 0 ? "+" : ""}{fmtYen(assetDiff)}</div>
+        ) : (
+          <div className="text-[11px] mt-1" style={{ color: "var(--ink-soft)" }}>先月の記録がまだありません。</div>
+        )}
+      </div>
     </div>
   );
 }
