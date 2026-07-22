@@ -1,0 +1,14 @@
+{
+  "name": "家計ノート",
+  "short_name": "家計ノート",
+  "description": "サブスク・収支・資産をひとつの通帳で管理する家計簿アプリ",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#F1EFE8",
+  "theme_color": "#1B2A4A",
+  "lang": "ja",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
