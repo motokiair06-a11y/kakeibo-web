@@ -1,74 +1,63 @@
-# 家計ノート(プレーンHTML/CSS/JS版)
+# 家計ノート（household-ledger）
 
-ビルド不要・npm不要のバージョンです。ファイルをそのままGitHub Pagesに置くだけで動きます。
-iPadだけで公開まで完結できます。
+サブスクリプション・収支・資産をまとめて管理するReact製の家計簿アプリです。
 
-## 構成
+## 主な機能
 
-- `index.html` — 画面の骨組み
-- `style.css` — デザイン
-- `app.js` — すべてのロジック(Supabaseとの通信もここ)
-- `config.js` — Supabaseの接続情報(自分で編集する必要があります)
-- `supabase/schema.sql` — Supabaseに1回だけ実行するテーブル定義
+- サブスクの初回支払い日・支払い周期（日/週/ヶ月/年を自由に組み合わせ）を登録し、支払日までのカウントダウンを表示
+- サブスクの停止・再開（同一IDのまま状態を切り替えるため、無料体験の再登録を繰り返しても重複しません。停止中は支払い履歴に追加されません）
+- 支払日の指定日数前にリマインド表示
+- **支払い履歴**：稼働中のサブスクは支払日が来ると自動的に実績として記録されます（手動での削除も可能）
+- **分析**：サブスクの支払い履歴を「月間（今月）」または「任意の期間」で集計。任意の期間は初期状態で直近1年間を表示し、期間を変更するとその範囲の支払い履歴だけを再集計します
+- **カレンダー**：月間カレンダーにサブスクの支払い（実績・予定）と収入・支出を色分けして表示。日付を選ぶとその日の記録の一覧と、収入・支出のクイック追加ができます
+- 収入・支出をカテゴリ別に記録（支出:「買い物」、収入:「お小遣い」を含む）
+- ホームの「自由に使えるお金」は収入 − 支出 − 実際に支払われたサブスク額（支払い履歴ベース）で計算し、株式・投資信託などの資産は含めません
+- 株式・投資信託などの資産評価額／評価損益を種別ごとに入力（自由に使えるお金には含めません）
+  - 国内株式現物 / 米国株式現物 / 投資信託 / 預かり金等現金
 
-## 1. Supabaseプロジェクトを準備
+## セットアップ
 
-1. https://supabase.com で無料プロジェクトを作成
-2. SQL Editorで `supabase/schema.sql` の中身を実行
-3. Authentication > Providers で Email(Magic Link)が有効になっていることを確認
-4. Settings > API から `Project URL` と `anon public` キーをコピー
-
-## 2. config.js を編集
-
-`config.js` をテキストエディタ(iPadなら「テキスト編集」アプリやGitHubのWeb編集画面でOK)で開き、
-以下を書き換えます。
-
-```js
-const SUPABASE_URL = "https://xxxxxxxxxxxx.supabase.co";
-const SUPABASE_ANON_KEY = "your-anon-public-key";
+```bash
+npm install
+npm run dev
 ```
 
-※ anon public キーは公開されても問題ない設計のキーです(実際のアクセス制御はSupabase側の
-Row Level Securityが行うため)。このファイルはそのままGitHubにコミットして大丈夫です。
+`http://localhost:5173` で開発サーバーが起動します。
 
-## 3. iPadでGitHubにアップロード
+## ビルド
 
-1. github.com で空のリポジトリを新規作成
-2. リポジトリの「Add file」→「Upload files」
-3. `index.html` `style.css` `app.js` `config.js` `supabase` フォルダをまとめてアップロード
-4. 「Commit changes」で確定
+```bash
+npm run build
+npm run preview
+```
 
-## 4. GitHub Pagesを有効化
+`dist/` に静的ファイルが出力されます。GitHub Pages・Netlify・Vercelなど任意の静的ホスティングにデプロイできます。
 
-1. リポジトリの「Settings」→「Pages」
-2. 「Build and deployment」の Source を **Deploy from a branch** のまま、
-   Branch を `main` / `/(root)` にして Save
-3. 数十秒後、`https://ユーザー名.github.io/リポジトリ名/` が公開されます
+## データの保存について
 
-ビルドが不要なので、Actionsの設定もSecretsの登録も不要です。ファイルを置くだけで完了します。
+入力したデータはブラウザの `localStorage` に保存されます。サーバーには送信されません。
 
-## 5. ログインURLの設定
+- ブラウザやデバイスごとに保存されるため、別の端末やブラウザとは同期されません
+- ブラウザのデータ消去（キャッシュクリア等）で消える場合があります
+- 複数端末で同期したい場合は、Supabase・Firebaseなどのバックエンドと接続する形に拡張してください
 
-Supabaseの「Authentication」→「URL Configuration」→「Redirect URLs」に、
-上記で発行されたPagesのURLを追加してください。これを忘れると、届いたログインメールの
-リンクをタップしても正しく戻ってこられません。
+## 技術スタック
 
-## 6. 家族と共有する
+- React 18 + Vite
+- Tailwind CSS
+- lucide-react（アイコン）
 
-「設定」タブに表示される招待コード(あなたのユーザーID)を家族に伝え、
-相手が同じ画面で「招待コードを入力して参加」すると、二人で同じ家計簿を編集できるようになります。
+## ディレクトリ構成
 
-## 今後ファイルを更新するとき
-
-`app.js` などを直接GitHubのWeb上で開いて鉛筆アイコンで編集→「Commit changes」するだけで、
-即座にPages上の公開内容にも反映されます(ビルド待ちは発生しません)。
-
-## Reactのビルド版との違い
-
-以前お渡ししたReact + Vite版(`kakeibo-web.zip`)と機能はほぼ同じですが、こちらは:
-- ビルドツール・npm不要
-- GitHub Actions不要、ファイルをそのまま置くだけ
-- グラフはrechartsの代わりにChart.js(CDN経由)を使用
-- アイコンはlucide-reactの代わりに絵文字を使用
-
-という違いがあります。今後の編集も、iPad上でGitHubのファイルを直接テキスト編集するだけで完結します。
+```
+household-ledger/
+├── index.html
+├── package.json
+├── postcss.config.js
+├── tailwind.config.js
+├── vite.config.js
+└── src/
+    ├── main.jsx
+    ├── App.jsx      # アプリ本体
+    └── index.css    # Tailwind + カスタムスタイル
+```
